@@ -14,6 +14,7 @@
 # limitations under the License.
 
 """Sample Generate GPT2"""
+import ipdb
 
 import os
 import stat
@@ -28,7 +29,7 @@ from arguments import get_args
 from utils import Timers
 from pretrain_gpt2 import initialize_distributed
 from pretrain_gpt2 import set_random_seed
-from utils import load_checkpoint, get_checkpoint_iteration
+from utils import load_checkpoint, get_checkpoint_iteration, get_logger
 from data_utils import get_tokenizer
 import mpu
 import deepspeed
@@ -44,12 +45,17 @@ from tqdm import tqdm
 from generation import get_batch, filling_sequence, add_interlacing_beam_marks, magnify, inverse_prompt_score
 from torchvision.utils import save_image
 import torch.distributed as dist
+from matplotlib import pyplot as plt
 
 
 def setup_model(args):
     """Setup model and optimizer."""
 
     model = get_model(args)
+
+    # state = torch.load(args.load)
+    # state = torch.load('/home/user/mzsun/codes/CogView/experiments/cogview_wsrvtt 2021-08-11 23:27:55/cogview_final.pt')['weights']
+    # model.load_state_dict(state)
 
     if args.load is not None:
         if args.deepspeed:
@@ -116,27 +122,16 @@ def get_context(args, query_template='{}'):
                 output_path = os.path.join(args.output_path, parts[0])
                 raw_text = '\t'.join(parts[1:])
 
-            if args.generation_task == 'post-selection':
-                parts = raw_text.split('\t')
-                seqs = []
-                for part in parts[1:]:
-                    try:
-                        seq_single = _parse_and_to_tensor('\t'.join([part, parts[0]]), img_size=img_size, query_template=query_template)
-                        seqs.append(seq_single)
-                    except (ValueError, FileNotFoundError) as e:
-                        print(e)
-                        continue
-                seq = torch.stack(seqs)
-            else:
-                try:
-                    seq = _parse_and_to_tensor(raw_text, img_size=img_size, query_template=query_template)
-                except (ValueError, FileNotFoundError) as e:
-                    print(e)
-                    continue
-                if len(seq) > ml:
-                    print("\nSeq length", len(seq),
-                        f"\nPlease give smaller context than {ml}!")
-                    continue
+            try:
+                seq = _parse_and_to_tensor(raw_text, img_size=img_size, query_template=query_template)
+            except (ValueError, FileNotFoundError) as e:
+                print(e)
+                continue
+            if len(seq) > ml:
+                print("\nSeq length", len(seq),
+                    f"\nPlease give smaller context than {ml}!")
+                continue
+
             yield (raw_text, seq, output_path)
 
 
@@ -151,12 +146,6 @@ def generate_images_once(model, args, raw_text, seq=None, num=8, query_template=
     with torch.no_grad():
         print('show raw text:', raw_text)
         start_time = time.time()
-        if args.generation_task in ['text2image', 'low-level super-resolution']:
-            invalid_slices = [slice(tokenizer.img_tokenizer.num_tokens, None)]
-        elif args.generation_task == 'image2text':
-            invalid_slices = [slice(0, tokenizer.img_tokenizer.num_tokens)]
-        else:
-            NotImplementedError
 
         mbz = args.max_inference_batch_size
         add_interlacing_beam_marks(seq, nb=min(num, mbz))
@@ -170,37 +159,39 @@ def generate_images_once(model, args, raw_text, seq=None, num=8, query_template=
         
         print("\nTaken time {:.2f}\n".format(time.time() - start_time), flush=True)
         print("\nContext:", raw_text, flush=True)
+        print("\nSave to: ", output_path, flush=True)
         imgs, txts = [], []
         for seq in output_tokens_list:
             decoded_txts, decoded_imgs = tokenizer.DecodeIds(seq.tolist())
             for i in range(len(decoded_imgs)):
                 if decoded_imgs[i].shape[-1] == 128:
                     decoded_imgs[i] = torch.nn.functional.interpolate(decoded_imgs[i], size=(256, 256))
-            if args.debug:
-                imgs.extend(decoded_imgs)
-            else:
-                imgs.append(decoded_imgs[-1]) # only the last image (target)
+            ipdb.set_trace()
+            decoded_imgs = torch.cat(decoded_imgs, dim=0).detach().cpu()
+            num_frames = decoded_imgs.shape[0]
+            show_img = decoded_imgs[:num_frames, :, :, :].permute(2, 0, 3, 1).numpy()
+            show_img = show_img.reshape(256, 256 * num_frames, 3)
+            plt.imsave(os.path.join(output_path, f'{raw_text}_{len(imgs)}.jpg'), show_img)
+
+            imgs.append(show_img) # only the last image (target)
             txts.append(decoded_txts)
         if args.generation_task == 'image2text':
             print(txts)
             return 
-        if args.debug:
-            output_file_prefix = raw_text.replace('/', '')[:20]
-            output_file = os.path.join(output_path, f"{output_file_prefix}-{datetime.now().strftime('%m-%d-%H-%M-%S')}.jpg")
-            imgs = torch.cat(imgs, dim=0)
-            print(txts)
-            print("\nSave to: ", output_file, flush=True)
-            save_image(imgs, output_file, normalize=True)
-        else:
-            print("\nSave to: ", output_path, flush=True)
-            for i in range(len(imgs)):
-                save_image(imgs[i], os.path.join(output_path,f'{i}.jpg'), normalize=True)
-                os.chmod(os.path.join(output_path,f'{i}.jpg'), stat.S_IRWXO+stat.S_IRWXG+stat.S_IRWXU)
-            save_image(torch.cat(imgs, dim=0), os.path.join(output_path,f'concat.jpg'), normalize=True)
-            os.chmod(os.path.join(output_path,f'concat.jpg'), stat.S_IRWXO+stat.S_IRWXG+stat.S_IRWXU)
+
+        try:
+            plt.imsave(os.path.join(output_path,f'{raw_text}_concat.jpg'), torch.cat(imgs, dim=0))
+        except:
+            pass
+        # os.chmod(os.path.join(output_path,f'concat.jpg'), stat.S_IRWXO+stat.S_IRWXG+stat.S_IRWXU)
 
 def generate_images_continually(model, args):
-    if args.generation_task == 'text2image':
+    # ipdb.set_trace()
+    img_tokens_len = 256
+    prefix = {8: '[TINY]', 16: '[SMALL]', 32: '[BASE]', 64: '[BIG]'}[int(math.sqrt(img_tokens_len))]
+    if args.generation_task == 'predict4frames':
+        query_template = '[ROI1] {} ' + prefix + ' [BOI1] [MASK]*256 [EOI1] [BOI2] [MASK]*256 [EOI2] [BOI3] [MASK]*256 [EOI3] [BOI4] [MASK]*256 [EOI4]'
+    elif args.generation_task == 'text2image':
         query_template = '[ROI1] {} [BASE] [BOI1] [MASK]*1024'
     elif args.generation_task == 'image2text':
         query_template = '[BASE] [BOI1] [Image]{} [EOI1] [ROI1] [MASK]*20'
@@ -268,9 +259,7 @@ def post_selection(model, args, raw_text, seq, output_path):
             fout.write(raw_text+'\n')
             fout.write('\t'.join([str(x) for x in scores.tolist()])+'\n')
         print("\nSave to: ", output_file, flush=True)
-       
 
-                
 def prepare_tokenizer(args):
 
     tokenizer = get_tokenizer(args)
@@ -314,8 +303,11 @@ def main():
     # Random seeds for reproducability.
     set_random_seed(args.seed)
 
+    Logger = get_logger('', None, False)
     # get the tokenizer
     tokenizer = prepare_tokenizer(args)
+    # args.vocab_size = tokenizer.num_tokens
+    print('# Vocal_size:   ', args.vocab_size)
 
     # Model, optimizer, and learning rate.
     model = setup_model(args)

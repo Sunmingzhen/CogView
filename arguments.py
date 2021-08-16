@@ -101,7 +101,8 @@ def add_training_args(parser):
     group.add_argument('--experiment-name', type=str, default="CogView",
                        help="The experiment name for summary and checkpoint")
     group.add_argument('--batch-size', type=int, default=4,
-                       help='Data Loader batch size')
+                       help='Data Loader batch size per gpu')
+    group.add_argument('--image-size', type=int, default=None),
     group.add_argument('--weight-decay', type=float, default=0.01,
                        help='weight decay coefficient for L2 regularization')
     group.add_argument('--checkpoint-activations', action='store_true',
@@ -113,6 +114,7 @@ def add_training_args(parser):
                        help='uses activation checkpointing from deepspeed')
     group.add_argument('--clip-grad', type=float, default=1.0,
                        help='gradient clipping')
+    group.add_argument('--train-epochs', type=int, default=2),
     group.add_argument('--train-iters', type=int, default=1000000,
                        help='total number of iterations to train over all training runs')
     group.add_argument('--log-interval', type=int, default=50,
@@ -179,6 +181,7 @@ def add_training_args(parser):
     
     # loss scale
     group.add_argument('--txt-loss-scale', type=float, default=1)
+    group.add_argument('--img-loss-scale', type=float, default=1)
     group.add_argument('--fast-load', action='store_true',
                        help='load checkpoints without locks.')
 
@@ -212,13 +215,13 @@ def add_text_generate_args(parser):
     # group.add_argument("--out-seq-length", type=int, default=256)
     group.add_argument("--generation-task", type=str,
                        default='text2image',
-                       choices=['text2image',
-                                'image2text',
-                                'super-resolution',
-                                'low-level super-resolution',
-                                'post-selection',
-                                'raw'
-                                ],
+                       # choices=['text2image',
+                       #          'image2text',
+                       #          'super-resolution',
+                       #          'low-level super-resolution',
+                       #          'post-selection',
+                       #          'raw'
+                       #          ],
                        help='what type of inference task to use')
     group.add_argument('--input-source', type=str, default='interactive',
                        help='what input mode to use, interactive or path')
@@ -242,7 +245,7 @@ def add_data_args(parser):
     group.add_argument('--shuffle', action='store_true',
                        help='Shuffle data. Shuffling is deterministic '
                             'based on seed and current epoch.')
-    group.add_argument('--train-data', nargs='+', default=None,
+    group.add_argument('--train-data', type=str, default=None,
                        help='Whitespace separated filenames or corpora names '
                             'for training.')
 
@@ -254,13 +257,11 @@ def add_data_args(parser):
     group.add_argument('--test-data', nargs='*', default=None,
                        help="""Filename for testing""")
 
-    group.add_argument('--num-workers', type=int, default=2,
+    group.add_argument('--num-workers', type=int, default=0,
                        help="""Number of workers to use for dataloading""")
 
     group.add_argument('--dataset-type', type=str,
-                       default='TokenizedDataset',
-                       choices=['TokenizedDataset',
-                                'TextCodeDataset'],
+                       default='MsrvttDataset',
                        help='what type of dataset to use')
 
     group.add_argument('--max-memory-length', type=int, default=2048,
@@ -313,6 +314,7 @@ def get_args():
     parser = deepspeed.add_config_arguments(parser)
 
     args = parser.parse_args()
+
     if not args.train_data:
         print('WARNING: No training data specified')
         assert args.is_sparse != 1, 'use is-sparse == 2 for inference'
@@ -360,8 +362,8 @@ def get_args():
     if hasattr(args, "deepspeed") and args.deepspeed and args.deepspeed_config is not None:
         with open(args.deepspeed_config) as file:
             deepspeed_config = json.load(file)
-        if "train_micro_batch_size_per_gpu" in deepspeed_config:
-            args.batch_size = deepspeed_config["train_micro_batch_size_per_gpu"]
+        # if "train_micro_batch_size_per_gpu" in deepspeed_config:
+        #     args.batch_size = deepspeed_config["train_micro_batch_size_per_gpu"]
         if "gradient_accumulation_steps" in deepspeed_config:
             args.gradient_accumulation_steps = deepspeed_config["gradient_accumulation_steps"]
         else:

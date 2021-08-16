@@ -8,6 +8,7 @@
 
 # here put the import lib
 import os
+import ipdb
 import sys
 import math
 import random
@@ -26,16 +27,15 @@ from .samplers import DistributedBatchSampler
 
 import mpu
 
-
-def make_data_loader(dataset, batch_size, num_iters, args):
+def make_data_loader_origin(dataset, batch_size, num_iters, args):
     world_size = torch.distributed.get_world_size(
-        group=mpu.get_data_parallel_group())
+                                    group=mpu.get_data_parallel_group())
     rank = torch.distributed.get_rank(group=mpu.get_data_parallel_group())
     distributed = world_size > 1
 
     sampler = torch.utils.data.SequentialSampler(dataset)
     drop_last = distributed
-    # the GPUs in the same model parallel group receive the same data
+    #the GPUs in the same model parallel group receive the same data
     if distributed:
         batch_sampler = DistributedBatchSampler(sampler,
                                                                     batch_size,
@@ -51,10 +51,45 @@ def make_data_loader(dataset, batch_size, num_iters, args):
                                               batch_sampler=batch_sampler,
                                               num_workers=args.num_workers,
                                               pin_memory=True)
+
     return data_loader
 
+def make_data_loader(dataset, batch_size, num_iters, args):
+    world_size = torch.distributed.get_world_size(
+                                    group=mpu.get_data_parallel_group())
+    rank = torch.distributed.get_rank(group=mpu.get_data_parallel_group())
+    distributed = world_size > 1
 
-def make_dataset(dataset_type, path, split, args, **kwargs):
+    # sampler = torch.utils.data.SequentialSampler(dataset)
+    # drop_last = distributed
+    # the GPUs in the same model parallel group receive the same data
+    # if distributed:
+    #     batch_sampler = DistributedBatchSampler(sampler,
+    #                                                                 batch_size,
+    #                                                                 drop_last,
+    #                                                                 rank,
+    #                                                                 world_size,
+    #                                                                 gradient_accumulation_steps=args.gradient_accumulation_steps)
+    # else:
+    #     batch_sampler = torch.utils.data.BatchSampler(sampler,
+    #                                                     batch_size,
+    #                                                     drop_last)
+    # data_loader = torch.utils.data.DataLoader(dataset,
+    #                                           batch_sampler=batch_sampler,
+    #                                           num_workers=args.num_workers,
+    #                                           pin_memory=True)
+
+    data_loader = torch.utils.data.DataLoader(dataset,
+                                              num_workers=args.num_workers,
+                                              pin_memory=True, drop_last=True)
+    return data_loader
+
+def make_dataset(dataset_type, path, args, **kwargs):
+    """function to create datasets+tokenizers for common options"""
+
+    return get_dataset_by_type(dataset_type, path, args)
+
+def make_dataset_origin(dataset_type, path, split, args, **kwargs):
     """function to create datasets+tokenizers for common options"""
     print('make dataset ...', path)
     if split is None:
@@ -67,14 +102,16 @@ def make_dataset(dataset_type, path, split, args, **kwargs):
     ds = []
     for p in path:
         d = get_dataset_by_type(dataset_type, p, args)
-        if p.find('t2i') >= 0:
-            ds.extend([d] * 4)
-            print(f'Enlarge {p} 4 times...')
-        elif p.find('i2t') >= 0:
-            ds.extend([d] * 2)
-            print(f'Enlarge {p} 2 times...')
-        else:
-            ds.append(d)
+        ds.append(d)
+
+        # if p.find('t2i') >= 0:
+        #     ds.extend([d] * 4)
+        #     print(f'Enlarge {p} 4 times...')
+        # elif p.find('i2t') >= 0:
+        #     ds.extend([d] * 2)
+        #     print(f'Enlarge {p} 2 times...')
+        # else:
+        #     ds.append(d)
 
     ds = RandomMappingDataset(ConcatDataset(ds))
 
@@ -92,7 +129,7 @@ def make_loaders(args):
     eval_batch_size = batch_size
     if args.eval_batch_size is not None:
         eval_batch_size = args.eval_batch_size * world_size
-    
+
     split = get_split(args)
 
     data_set_args = {
@@ -110,32 +147,25 @@ def make_loaders(args):
     test = None
 
     if args.train_data is not None:
-        train = make_dataset(**data_set_args, args=args)
-        if should_split(split):
-            train, valid, test = train
-
-    # make training and val dataset if necessary
-    if valid is None and args.valid_data is not None:
-        eval_set_args['path'] = args.valid_data
-        valid = make_dataset(**eval_set_args, args=args)
-    if test is None and args.test_data is not None:
-        eval_set_args['path'] = args.test_data
-        test = make_dataset(**eval_set_args, args=args)
+        # train, valid, test = make_dataset_origin(**data_set_args, args=args)
+        train, valid, test = get_dataset_by_type(args.dataset_type, args.train_data, args=args)
+        # if should_split(split):
+        #     train, valid, test = train
 
     # wrap datasets with data loader
     if train is not None and args.batch_size > 0:
-        train = make_data_loader(train, batch_size, args.train_iters, args)
+        train = make_data_loader_origin(train, batch_size, args.train_iters, args)
         args.do_train = True
     else:
         args.do_train = False
     eval_batch_size = eval_batch_size if eval_batch_size != 0 else batch_size
     if valid is not None:
-        valid = make_data_loader(valid, eval_batch_size, args.train_iters, args)
+        valid = make_data_loader_origin(valid, eval_batch_size, args.train_iters, args)
         args.do_valid = True
     else:
         args.do_valid = False
     if test is not None:
-        test = make_data_loader(test, eval_batch_size, len(test) // eval_batch_size + 1, args)
+        test = make_data_loader_origin(test, eval_batch_size, len(test) // eval_batch_size + 1, args)
         args.do_test = True
     else:
         args.do_test = False

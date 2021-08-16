@@ -112,8 +112,7 @@ class GPT2Model(torch.nn.Module):
         transformer_output = self.transformer(embeddings, position_ids, attention_mask, txt_indices_bool, img_indices_bool, is_sparse, *mems)
         logits, *hidden_layers = transformer_output
         # Parallel logits.
-        logits_parallel = mpu.copy_to_model_parallel_region(
-            logits)
+        logits_parallel = mpu.copy_to_model_parallel_region(logits)
         logits_parallel = F.linear(logits_parallel,
                                    self.word_embeddings.weight)
 

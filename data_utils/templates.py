@@ -9,6 +9,7 @@
 # here put the import lib
 import os
 import sys
+import ipdb
 import math
 import random
 from tqdm import tqdm
@@ -31,7 +32,7 @@ def concat_codes(*codes):
     if is_tensor:
         return torch.cat(
             [
-                torch.tensor(code, device=device)
+                code.to(device) if isinstance(code, torch.Tensor) else torch.tensor(code, device=device)
                 for code in codes
             ]
         )
@@ -54,6 +55,22 @@ def TextCodeTemplate(text, code):
     text_ids = [tokenizer['[ROI1]']] + tokenizer(text)
     code = tokenizer.wrap_code(code)
     return concat_codes(text_ids, code)
+
+def TextFramesTemplate(text, code, frame_num):
+    # ipdb.set_trace()
+    tokenizer = get_tokenizer()
+    text_ids = [tokenizer['[ROI1]']] + tokenizer(text)
+    assert len(code) % frame_num == 0
+    per_frame_code = len(code) // frame_num
+
+    tokens = text_ids
+    for i in range(frame_num):
+        img_code = code[i * per_frame_code : (i+1) * per_frame_code]
+        img_code = tokenizer.wrap_code(img_code, idx=i+1)
+        tokens = concat_codes(tokens, img_code)
+    # ipdb.set_trace()
+    return tokens
+
 
 def Code2CodeTemplate(text, code0, code1):
     tokenizer = get_tokenizer()

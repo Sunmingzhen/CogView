@@ -20,6 +20,8 @@ import random
 import time
 import numpy as np
 import torch
+import sys
+import logging
 
 from torch.nn.parallel.distributed import DistributedDataParallel as torchDDP
 from fp16 import FP16_Optimizer
@@ -29,12 +31,62 @@ from tensorboardX import SummaryWriter
 
 SUMMARY_WRITER_DIR_NAME = 'runs'
 
+class Logger():
+    def __init__(self, logging_file, name, isopen):
+        if isopen is True:
+            # 创建一个日志器logger并设置其日志级别为DEBUG
+            logger = logging.getLogger(name)
+            logger.setLevel(logging.DEBUG)
 
-def get_sample_writer(name, base="..", iteration=0):
+
+            # 创建一个流处理器handler并设置其日志级别为DEBUG，输出到命令窗口
+            handler1 = logging.StreamHandler(sys.stdout)
+            handler1.setLevel(logging.DEBUG)
+            formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+            handler1.setFormatter(formatter)
+
+
+            # 创建一个文件处理器handler并设置其日志级别为DEBUG，输出到文件
+            handler2 = logging.FileHandler(logging_file)
+            handler2.setLevel(logging.DEBUG)
+            formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+            handler2.setFormatter(formatter)
+
+
+            # 为日志器logger添加上面创建的处理器handler
+            logger.addHandler(handler1)
+            logger.addHandler(handler2)
+
+
+            self.logger = logger
+        self.isopen = isopen
+
+
+    def info(self, message):
+        if self.isopen:
+            self.logger.info(message)
+
+    def warning(self, message):
+        if self.isopen:
+            self.logger.warning(message)
+
+def get_logger(logging_file=None, name=None, isopen=None):
+    if torch.distributed.get_rank() == 0:
+        if not hasattr(get_logger, 'Logger_0'):
+            assert logging_file is not None, "Logger_0 hasn't been created."
+            get_logger.Logger_0 = Logger(logging_file, name, isopen=isopen)
+        return get_logger.Logger_0
+    else:
+        if not hasattr(get_logger, 'Logger_1'):
+            assert logging_file is not None, "Logger_1 hasn't been created."
+            get_logger.Logger_1 = Logger(logging_file, name, isopen=False)
+        return get_logger.Logger_1
+
+def get_sample_writer(logdir, iteration=0):
     """Returns a tensorboard summary writer
     """
     return SummaryWriter(
-        log_dir=os.path.join(base, SUMMARY_WRITER_DIR_NAME, name), purge_step=iteration)
+        log_dir=logdir, purge_step=iteration)
 
 
 def print_rank_0(message):
@@ -47,11 +99,11 @@ def print_rank_0(message):
 
 def print_args(args):
     """Print arguments."""
-
-    print('arguments:', flush=True)
+    Logger=get_logger()
+    Logger.info('arguments:')
     for arg in vars(args):
         dots = '.' * (29 - len(arg))
-        print('  {} {} {}'.format(arg, dots, getattr(args, arg)), flush=True)
+        Logger.info('  {} {} {}'.format(arg, dots, getattr(args, arg)))
 
 
 def print_params_min_max_norm(optimizer, iteration):

@@ -171,7 +171,8 @@ class CudaRNGStatesTracker:
         the original state."""
         # Check if we have added the state
         if name not in self.states_:
-            raise Exception('cuda rng state {} is not added'.format(name))
+            s = f'cuda rng state {name} is not added'
+            raise Exception(s)
         # Store current rng state.
         orig_cuda_rng_state = torch.cuda.get_rng_state()
         # Set rng state to the desired one

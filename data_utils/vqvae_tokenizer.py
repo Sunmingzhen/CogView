@@ -12,9 +12,11 @@ import sys
 import math
 import random
 from tqdm import tqdm
+from einops import rearrange
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 
@@ -29,6 +31,58 @@ def sqrt_int(x):
     r = int(math.sqrt(x) + 1e-4)
     assert r * r == x
     return r
+
+# pretrained Discrete VAE from OpenAI
+def make_contiguous(module):
+    with torch.no_grad():
+        for param in module.parameters():
+            param.set_(param.contiguous())
+
+def unmap_pixels(x, eps = 0.1):
+    return torch.clamp((x - eps) / (1 - 2 * eps), 0, 1)
+
+def load_model(path):
+    with open(path, 'rb') as f:
+        return torch.load(f, map_location = torch.device('cpu'))
+
+def map_pixels(x, eps = 0.1):
+    return (1 - 2 * eps) * x + eps
+
+class OpenAIDiscreteVAE(nn.Module):
+    def __init__(self, model_path, device):
+        super().__init__()
+
+        OPENAI_PATH = model_path
+        self.enc = load_model(os.path.join(OPENAI_PATH, 'encoder.pkl'))
+        self.dec = load_model(os.path.join(OPENAI_PATH, 'decoder.pkl'))
+        make_contiguous(self)
+
+        self.num_layers = 3
+        self.image_size = 256
+        self.num_tokens = 8192
+        self.device = device
+
+    @torch.no_grad()
+    def get_codebook_indices(self, img):
+        img = map_pixels(img)
+        z_logits = self.enc.blocks(img)
+        z = torch.argmax(z_logits, dim = 1)
+        return rearrange(z, 'b h w -> b (h w)')
+
+    def decode(self, img_seq):
+        if isinstance(img_seq, list):
+            img_seq = torch.tensor(img_seq, device=self.device)
+        b, n = img_seq.shape
+        img_seq = rearrange(img_seq, 'b (h w) -> b h w', h = int(math.sqrt(n)))
+
+        z = F.one_hot(img_seq, num_classes = self.num_tokens)
+        z = rearrange(z, 'b h w c -> b c h w').float().to(self.device)
+        x_stats = self.dec(z).float()
+        x_rec = unmap_pixels(torch.sigmoid(x_stats[:, :3]))
+        return x_rec
+
+    def forward(self, img):
+        return self.decode(self.get_codebook_indices(img))
 
 class VQVAETokenizer(object):
     def __init__(self, 

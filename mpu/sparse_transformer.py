@@ -665,8 +665,8 @@ def standard_attention(query_layer, key_layer, value_layer, attention_mask, atte
     attention_probs = torch.nn.Softmax(dim=-1)(attention_scores)
 
     if attention_dropout is not None:
-        with get_cuda_rng_tracker().fork():
-            attention_probs = attention_dropout(attention_probs)
+        # with get_cuda_rng_tracker().fork():
+        attention_probs = attention_dropout(attention_probs)
     # Context layer.
     # [b, np, s, hn]
     context_layer = torch.matmul(attention_probs, value_layer)

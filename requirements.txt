@@ -1,8 +1,13 @@
-torch
+#
 deepspeed
 tqdm
 lmdb
 filelock
 sentencepiece
 mpi4py
-tensorboardX==1.8
+transformers
+tokenizers
+ftfy
+einops
+dall_e
+fused_layer_norm_cuda

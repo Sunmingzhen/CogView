@@ -20,6 +20,8 @@ USE_TORCH_DDP = True
 
 from datetime import datetime
 import os
+import ipdb
+import time
 import random
 import math
 from filelock import FileLock
@@ -35,10 +37,7 @@ from learning_rates import AnnealingLR
 from model import GPT2Model
 from model import gpt2_get_params_for_weight_decay_optimization
 
-if USE_TORCH_DDP:
-    from model import PyTorchDistributedDataParallel as DDP
-else:
-    from model import DistributedDataParallel as DDP
+from model import PyTorchDistributedDataParallel as DDP
 import mpu
 from apex.optimizers import FusedAdam as Adam
 from utils import Timers
@@ -50,8 +49,10 @@ from utils import print_params_min_max_norm
 from utils import print_rank_0
 from utils import get_sample_writer
 import torch.distributed as dist
-
-from data_utils import make_loaders, get_tokenizer, detect_new_datasets
+from utils import get_logger
+from model.model_utils import *
+from data_utils.datasets import MsrvttTokensDataset, WebvidTokensDataset
+from data_utils import make_loaders, make_data_loader_origin, get_tokenizer, detect_new_datasets
 
 import stat
 
@@ -253,7 +254,7 @@ def get_masks_and_position_ids(data,
     return attention_mask, loss_mask, position_ids
 
 
-def get_batch(data_iterator, args, timers):
+def get_batch(dataset, data_iterator, args, timers):
     # Items and their type.
     keys = ['text', 'loss_mask']
     datatype = torch.int64
@@ -289,13 +290,13 @@ def get_batch(data_iterator, args, timers):
     return tokens, labels, loss_mask, attention_mask, position_ids
 
 
-def forward_step(data_iterator, model, args, timers, mems):
+def forward_step(dataset, data_iterator, model, args, timers, mems):
     """Forward step."""
 
     # Get the batch.
     timers('batch generator').start()
-    tokens, labels, loss_mask, attention_mask, position_ids = get_batch(
-        data_iterator, args, timers)
+    tokens, labels, loss_mask, attention_mask, position_ids = get_batch(dataset,
+                                                            data_iterator, args, timers)
 
     timers('batch generator').stop()
 
@@ -311,6 +312,7 @@ def forward_step(data_iterator, model, args, timers, mems):
                                               labels)
     # scaling loss mask
     loss_mask[txt_indices_bool] *= args.txt_loss_scale
+    loss_mask[img_indices_bool] *= args.img_loss_scale
     loss_mask = loss_mask.view(-1)    
 
     # precalc outlier point, uncomment this if needed
@@ -320,14 +322,13 @@ def forward_step(data_iterator, model, args, timers, mems):
     #         print(f'Remove {outliers.sum()} outliers.')
     #         loss_mask[outliers] = 1e-4
 
-
     losses = losses.view(-1) * loss_mask
     loss = torch.sum(losses) / loss_mask.sum()
 
     # =====================   Log partial losses   ======================== #
     img_indices_bool = img_indices_bool.view(-1)
     txt_indices_bool = txt_indices_bool.view(-1)
-    img_loss = losses[img_indices_bool].detach().sum() / max(img_indices_bool.sum(), 1)
+    img_loss = losses[img_indices_bool].detach().sum() / max(img_indices_bool.sum(), 1) / args.img_loss_scale
     txt_loss = losses[txt_indices_bool].detach().sum() / max(txt_indices_bool.sum(), 1) / args.txt_loss_scale
 
     # Reduce losses for logging
@@ -403,13 +404,13 @@ def see_memory_usage(message, force=False):
         print("Max cache Allocated ", torch.cuda.max_memory_cached()/(1024*1024*1024), "GigaBytes")
         print(" ")
 
-def train_step(data_iterator, model, optimizer, lr_scheduler,
+def train_step(dataset, data_iterator, model, optimizer, lr_scheduler,
                args, timers, mems):
     """Single training step."""
     while True:
         # Forward model for one step.
         timers('forward').start()
-        lm_loss, mems, img_loss, txt_loss = forward_step(data_iterator, model, args, timers, mems)
+        lm_loss, mems, img_loss, txt_loss = forward_step(dataset, data_iterator, model, args, timers, mems)
         timers('forward').stop()
 
         if (img_loss + txt_loss).isnan().any() or (img_loss + txt_loss).isinf().any():
@@ -459,9 +460,13 @@ def report_iteration_metrics(summary_writer, optimizer, lr, loss, elapsed_time, 
         log_string += ' loss scale {:.1f} |'.format(
             optimizer.cur_scale if args.deepspeed else optimizer.loss_scale)
     print_rank_0(log_string)
-    if summary_writer is not None:
+    if torch.distributed.get_rank() == 0:
+        Logger = get_logger()
+        Logger.info("Summary_writer is writing...")
         summary_writer.add_scalar(f'Train/lr', lr, step)
         summary_writer.add_scalar(f'Train/train_loss', loss, step)
+        summary_writer.add_scalar(f'Train/img_loss', img_loss, step)
+        summary_writer.add_scalar(f'Train/txt_loss', txt_loss, step)
         summary_writer.add_scalar(f'Train/elapsed_time', elapsed_time, step)
 
 
@@ -480,10 +485,12 @@ def report_evaluate_metrics(summary_writer, prefix, loss, ppl, step):
 
 
 def train(model, optimizer, lr_scheduler,
-          train_data_iterator, val_data_iterator, timers, args, summary_writer=None):
+          train_data, train_data_iterator, val_data_iterator, timers, args, summary_writer=None):
     """Train the model."""
+    # ipdb.set_trace()
     # Turn on training mode which enables dropout.
     model.train()
+    Logger = get_logger()
 
     # Tracking loss.
     total_lm_loss = 0.0
@@ -496,17 +503,7 @@ def train(model, optimizer, lr_scheduler,
     report_memory_flag = True
     mems = []
     while args.iteration < args.train_iters:
-
-        if args.iteration % 100 == 0:
-            new_loaders = detect_new_datasets(args)
-            if new_loaders is not None:
-                print(f'Loatding new datasets ... Now we train models on {args.train_data}.')
-                train_data_iterator = iter(new_loaders[0])
-                val_data_iterator = iter(new_loaders[1])
-                # TODO close the original
-
-
-        lm_loss, skipped_iter, mems, img_loss, txt_loss = train_step(train_data_iterator,
+        lm_loss, skipped_iter, mems, img_loss, txt_loss = train_step(train_data, train_data_iterator,
                                            model,
                                            optimizer,
                                            lr_scheduler,
@@ -559,8 +556,8 @@ def train(model, optimizer, lr_scheduler,
             torch.distributed.barrier()
             time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             rank = torch.distributed.get_rank()
-            print('rank: {} | time: {} | exiting the program at iteration {}'.
-                  format(rank, time_str, args.iteration), flush=True)
+            Logger.info('rank: {} | time: {} | exiting the program at iteration {}'.
+                            format(rank, time_str, args.iteration))
             exit()
 
     return args.iteration, skipped_iters
@@ -722,27 +719,54 @@ def main():
 
     # Arguments.
     args = get_args()
+
+    cur_time = str(time.strftime("-%Y-%m-%d-%H:%M:%S", time.localtime()))
+    # record experiments info
     if args.load:
         args.experiment_name = os.path.basename(os.path.normpath(args.load))
     else:
-        args.experiment_name = args.experiment_name + datetime.now().strftime("%m-%d-%H-%M")
+        assert args.experiment_name is not None
+        args.experiment_name = args.experiment_name + cur_time
+
     if args.save:
         args.save = os.path.join(args.save, args.experiment_name)
+        if os.path.exists(args.save) is False:
+            os.mkdir(args.save)
+
     # Pytorch distributed.
     initialize_distributed(args)
 
     # Random seeds for reproducability.
     set_random_seed(args.seed)
 
+    # init Logger
+    if torch.distributed.get_rank() == 0:
+        Logger = get_logger(os.path.join(args.save, f'logging_{cur_time}.log'), 'Cogview', isopen=True)
+    else:
+        Logger = get_logger(os.path.join(args.save, f'logging_{cur_time}.log'), 'Cogview', isopen=False)
+    Logger.info(f"Experimenets info is saved in {args.save}")
+
     # init tokenizer
     tokenizer = get_tokenizer(args)
 
     # Data stuff.
+    Logger.info("Start to load data...")
     train_data, val_data, test_data, args.vocab_size = get_train_val_test_data(args)
+    # ipdb.set_trace()
+    if train_data is not None:
+        train_data_iterator = iter(train_data)
+    else:
+        train_data_iterator = None
+    if val_data is not None:
+        val_data_iterator = iter(val_data)
+    else:
+        val_data_iterator = None
 
     # Model, optimizer, and learning rate.
+    Logger.info(f"Start to setup model & optimizer...")
     model, optimizer, lr_scheduler = setup_model_and_optimizer(args)
 
+    Logger.info(f"Start to load {args.load}...")
     if args.load is not None:
         if args.fast_load:
             args.iteration = load_checkpoint(model, optimizer, lr_scheduler, args)
@@ -753,42 +777,35 @@ def main():
         args.iteration = 0
     torch.distributed.barrier()
 
+    Logger.info(f"Start to set summary_writer in {os.path.join(args.save, 'log')}...")
     summary_writer = None
     if torch.distributed.get_rank() == 0:
         if args.finetune:
-            print('Finetune CogView model')
+            Logger.info('Finetune CogView model')
         else:
-            print('Pretrain CogView model')
+            Logger.info('Pretrain CogView model')
         print_args(args)
-        summary_writer = get_sample_writer(base=args.summary_dir, name=args.experiment_name, iteration=args.iteration)
+        summary_writer = get_sample_writer(os.path.join(args.save, 'log'), iteration=args.iteration)
 
-    # Resume data loader if necessary.
-    if args.resume_dataloader:
-        if train_data is not None:
-            train_data.batch_sampler.start_iter = args.iteration % \
-                                                  len(train_data)
-        if val_data is not None:
-            start_iter_val = (args.train_iters // args.save_interval) * \
-                             args.eval_interval
-            val_data.batch_sampler.start_iter = start_iter_val % \
-                                                len(val_data)
-    if train_data is not None:
-        train_data_iterator = iter(train_data)
-    else:
-        train_data_iterator = None
-    if val_data is not None:
-        val_data_iterator = iter(val_data)
-    else:
-        val_data_iterator = None
-
-    # TODO: figure out how to properly set this especially when resuming training
     iteration = 0
     if args.train_iters > 0:
         if args.do_train:
-            with ExitStack() as stack:
-                def save_on_exit(args_, model_, optimizer_, lr_scheduler_):
-                    save_checkpoint(args_.iteration, model_, optimizer_, lr_scheduler_, args_)
-                # stack.callback(save_on_exit, args, model, optimizer, lr_scheduler)
+            try:
+                iteration, skipped = train(model, optimizer,
+                                           lr_scheduler,
+                                           train_data, train_data_iterator,
+                                           val_data_iterator,
+                                           timers, args, summary_writer=summary_writer)
+            except StopIteration:
+                if train_data is not None:
+                    train_data_iterator = iter(train_data)
+                else:
+                    train_data_iterator = None
+                if val_data is not None:
+                    val_data_iterator = iter(val_data)
+                else:
+                    val_data_iterator = None
+
                 iteration, skipped = train(model, optimizer,
                                            lr_scheduler,
                                            train_data_iterator,

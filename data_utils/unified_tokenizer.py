@@ -9,6 +9,7 @@
 # here put the import lib
 import os
 import sys
+import ipdb
 import math
 import random
 from tqdm import tqdm
@@ -17,54 +18,115 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from .Simple_tokenizer import SimpleTokenizer
 from .sp_tokenizer import from_pretrained
-from .vqvae_tokenizer import VQVAETokenizer, sqrt_int
+from .vqvae_tokenizer import OpenAIDiscreteVAE, sqrt_int
+sys.path.append('..')
+from utils import get_logger
 
 class UnifiedTokenizer(object):
-    def __init__(self, img_tokenizer_path, device, img_tokenizer_num_tokens=None):
+    def __init__(self, img_tokenizer_path, device, isChinese=False, img_tokenizer_num_tokens=None):
         self.device = device
+        self.Logger = get_logger()
+
         if img_tokenizer_path is None and img_tokenizer_num_tokens is not None:
             # pretraining but only know the vocab size of VQVAE, which is developing fast
             self.img_tokenizer = FakeTokenizer(img_tokenizer_num_tokens)
         else:
-            self.img_tokenizer = VQVAETokenizer(model_path=img_tokenizer_path, device=self.device)
-        self.txt_tokenizer = from_pretrained()
+            self.img_tokenizer = OpenAIDiscreteVAE(model_path=img_tokenizer_path, device=self.device)
+        if isChinese is False:
+            self.Logger.info("Loading SimpleTokenizer for English text.")
+            self.txt_tokenizer = SimpleTokenizer()  # English Tokenizer
+        else:
+            self.Logger.info("Loading PretrainedTokenizer for chinese text.")
+            self.txt_tokenizer = from_pretrained() #chinese Tokenizer
         self.num_tokens = self.img_tokenizer.num_tokens + self.txt_tokenizer.num_tokens
         self.raw_command_tokens = [
-            ('[PAD]', 0),
-            ('[BOI1]', 1), # Begin
-            ('[BOI2]', 2),
-            ('[BOI3]', 3),
-            ('[EOI1]', 4), # End
-            ('[EOI2]', 5),
-            ('[EOI3]', 6),
-            ('[ROI1]', 7), # Reference
-            ('[ROI2]', 8),
-            ('[ROI3]', 9),
-            ('[SEP]', 10),
-            ('[MASK]', 11),
-            ('[CLS]', 12),
-            ('[ENC]', 13),
-            ('[TINY]', 14), # 8 * 8
-            ('[SMALL]', 15), # 16 * 16
-            ('[BASE]', 16), # 32 * 32
-            ('[BIG]', 17), # 64 * 64
-            ('[POS0]', 18), # 58210
-            ('[POS1]', 19),
-            ('[POS2]', 20),
-            ('[POS3]', 21),
-            ('[POS4]', 22),
-            ('[POS5]', 23),
-            ('[POS6]', 24),
-            ('[POS7]', 25),
-            ('[POS8]', 26)
-            # Please leave the ``size tokens'' at the back of command tokens
-        ]
+                ('[PAD]', 0),
+                ('[BOI1]', 1),  # Begin
+                ('[BOI2]', 2),
+                ('[BOI3]', 3),
+                ('[BOI4]', 4),
+                ('[BOI5]', 5),
+                ('[BOI6]', 6),
+                ('[BOI7]', 7),
+                ('[BOI8]', 8),
+                ('[BOI9]', 9),
+                ('[BOI10]', 10),
+                ('[EOI1]', 11),  # End
+                ('[EOI2]', 12),
+                ('[EOI3]', 13),
+                ('[EOI4]', 14),
+                ('[EOI5]', 15),
+                ('[EOI6]', 16),
+                ('[EOI7]', 17),
+                ('[EOI8]', 18),
+                ('[EOI9]', 19),
+                ('[EOI10]', 20),
+                ('[ROI1]', 21),  # Reference
+                ('[ROI2]', 22),
+                ('[ROI3]', 23),
+                ('[SEP]', 24),
+                ('[MASK]', 25),
+                ('[CLS]', 26),
+                ('[ENC]', 27),
+                ('[TINY]', 28),  # 8 * 8
+                ('[SMALL]', 29),  # 16 * 16
+                ('[BASE]', 30),  # 32 * 32
+                ('[BIG]', 31),  # 64 * 64
+                ('[POS0]', 32),  # 58210
+                ('[POS1]', 33),
+                ('[POS2]', 34),
+                ('[POS3]', 35),
+                ('[POS4]', 36),
+                ('[POS5]', 37),
+                ('[POS6]', 38),
+                ('[POS7]', 39),
+                ('[POS8]', 40),
+                ('[BOI4]', 41),
+                ('[EOI4]', 42)]
+        # self.raw_command_tokens = [
+        #     ('[PAD]', 0),
+        #     ('[BOI1]', 1), # Begin
+        #     ('[BOI2]', 2),
+        #     ('[BOI3]', 3),
+        #     ('[EOI1]', 4), # End
+        #     ('[EOI2]', 5),
+        #     ('[EOI3]', 6),
+        #     ('[ROI1]', 7), # Reference
+        #     ('[ROI2]', 8),
+        #     ('[ROI3]', 9),
+        #     ('[SEP]', 10),
+        #     ('[MASK]', 11),
+        #     ('[CLS]', 12),
+        #     ('[ENC]', 13),
+        #     ('[TINY]', 14), # 8 * 8
+        #     ('[SMALL]', 15), # 16 * 16
+        #     ('[BASE]', 16), # 32 * 32
+        #     ('[BIG]', 17), # 64 * 64
+        #     ('[POS0]', 18), # 58210
+        #     ('[POS1]', 19),
+        #     ('[POS2]', 20),
+        #     ('[POS3]', 21),
+        #     ('[POS4]', 22),
+        #     ('[POS5]', 23),
+        #     ('[POS6]', 24),
+        #     ('[POS7]', 25),
+        #     ('[POS8]', 26),
+        #     ('[BOI4]', 27),
+        #     ('[EOI4]', 28)
+        #     # Please leave the ``size tokens'' at the back of command tokens
+        # ]
         self.command_tokens = {
             k: v + self.num_tokens
             for k, v in self.raw_command_tokens
         }
         self.num_tokens += len(self.raw_command_tokens)
+
+        self.img_class_mask = torch.zeros(self.num_tokens)
+        self.img_class_mask[:self.img_tokenizer.num_tokens] += 1
+        self.txt_class_mask = torch.zeros(self.num_tokens)
+        self.txt_class_mask[self.img_tokenizer.num_tokens : self.img_tokenizer.num_tokens + self.txt_tokenizer.num_tokens] += 1
     
     def __getitem__(self, command_token):
         return self.command_tokens[command_token]
@@ -97,8 +159,11 @@ class UnifiedTokenizer(object):
                     # command tokens
                     token = self.raw_command_tokens[x - (self.num_tokens - len(self.raw_command_tokens))][0]
                     if token.startswith('[EOI') and len(img_buffer) > 0:
-                        # dump image
-                        ret_imgs.append(self.img_tokenizer.DecodeIds(img_buffer))
+                        ipdb.set_trace()
+                        # test
+                        # img_buffer = np.load('/raid/datasets/video_datasets/msrvtt/msrvtt_tokens/trainval/video0.npy')[:256]
+                        img_code = torch.tensor(img_buffer).unsqueeze(0)
+                        ret_imgs.append(self.img_tokenizer.decode(img_code))
                         img_buffer = []
                     if len(txt_buffer) > 0:
                         # dump text
@@ -112,7 +177,7 @@ class UnifiedTokenizer(object):
             
             if len(img_buffer) > 0:
                 # dump image
-                ret_imgs.append(self.img_tokenizer.DecodeIds(img_buffer))
+                ret_imgs.append(self.img_tokenizer.decode(img_buffer))
                 img_buffer = []
             if len(txt_buffer) > 0:
                 # dump text
@@ -125,8 +190,8 @@ class UnifiedTokenizer(object):
     def wrap_code(self, code, idx=1):
         s = sqrt_int(len(code))
         prefix = {8:'[TINY]', 16:'[SMALL]', 32:'[BASE]', 64:'[BIG]'}[s]
-        boi = {1:'[BOI1]', 2: '[BOI2]', 3:'[BOI3]'}[idx]
-        eoi = {1:'[EOI1]', 2: '[EOI2]', 3:'[EOI3]'}[idx]
+        boi = {1:'[BOI1]', 2: '[BOI2]', 3:'[BOI3]', 4:'[BOI4]', 5:'[BOI5]', 6:'[BOI6]', 7: '[BOI7]', 8:'[BOI8]', 9:'[BOI9]', 10:'[BOI10]'}[idx]
+        eoi = {1:'[EOI1]', 2: '[EOI2]', 3:'[EOI3]', 4:'[EOI4]', 5:'[EOI5]', 6:'[EOI6]', 7: '[EOI7]', 8:'[EOI8]', 9:'[EOI9]', 10:'[EOI10]'}[idx]
     
         if isinstance(code, list):
             return [self.command_tokens[prefix], self.command_tokens[boi]] + \
@@ -145,7 +210,7 @@ class UnifiedTokenizer(object):
                 (
                     torch.tensor([self.command_tokens[prefix], self.command_tokens[boi]]),
                     code, 
-                    np.array([self.command_tokens[eoi]])
+                    torch.tensor([self.command_tokens[eoi]])
                 )
             )
         else:

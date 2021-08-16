@@ -84,9 +84,9 @@ def filling_sequence(
 
     while seq[context_length] >= 0:
         # change what to generate
-        if seq[context_length] in [tokenizer['[BOI1]'], tokenizer['[BOI2]']]:
+        if seq[context_length] in [tokenizer['[BOI1]'], tokenizer['[BOI2]'], tokenizer['[BOI3]'], tokenizer['[BOI4]']]:
             invalid_slices = [slice(tokenizer.img_tokenizer.num_tokens, None)]
-        elif seq[context_length] in [tokenizer['[EOI1]'], tokenizer['[EOI2]']]:
+        elif seq[context_length] in [tokenizer['[EOI1]'], tokenizer['[EOI2]'], tokenizer['[EOI3]'], tokenizer['[EOI4]']]:
             invalid_slices = [
                 slice(0, tokenizer.img_tokenizer.num_tokens),
                 slice(tokenizer.img_tokenizer.num_tokens + tokenizer.txt_tokenizer.num_tokens, None)]
@@ -116,9 +116,9 @@ def filling_sequence(
         # Now, we want to generate seq[counter + 1]
         # token[:, index: counter+1] are just added.
 
-        if seq[counter + 1] in [tokenizer['[BOI1]'], tokenizer['[BOI2]']]:
+        if seq[counter + 1] in [tokenizer['[BOI1]'], tokenizer['[BOI2]'], tokenizer['[BOI3]'], tokenizer['[BOI4]']]:
             invalid_slices = [slice(tokenizer.img_tokenizer.num_tokens, None)]
-        elif seq[counter + 1] in [tokenizer['[EOI1]'], tokenizer['[EOI2]']]:
+        elif seq[counter + 1] in [tokenizer['[EOI1]'], tokenizer['[EOI2]'], tokenizer['[EOI3]'], tokenizer['[EOI4]']]:
             invalid_slices = [
                 slice(0, tokenizer.img_tokenizer.num_tokens),
                 slice(tokenizer.img_tokenizer.num_tokens + tokenizer.txt_tokenizer.num_tokens, None)]
